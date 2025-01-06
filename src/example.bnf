@@ -1,0 +1,7 @@
+postal.address = name.part street.address zip.part
+name.part = personal.part last.name opt.suffix.part "\n" | personal.part name.part
+personal.part = first.name | initial "."
+street.address = house.num street.name opt.apt.num "\n"
+zip.part = town.name "," state.code zip.code "\n"
+opt.suffix.part = "Sr." | "Jr." | roman.numeral | ""
+opt.apt.num = "Apt" apt.num | ""
