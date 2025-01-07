@@ -1,4 +1,5 @@
 mod grammar;
+mod parser;
 
 use std::collections::HashMap;
 

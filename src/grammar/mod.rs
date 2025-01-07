@@ -12,14 +12,14 @@ pub enum Symbol {
 }
 
 // The symbols in a single alternative
-type Alternative = Vec<Symbol>;
+pub type Alternative = Vec<Symbol>;
 
 // The alternatives of a rewrite rule
-type Rule = Vec<Alternative>;
+pub type Rewrite = Vec<Alternative>;
 
 #[derive(Debug)]
 pub struct Grammar {
     pub start_symbol: String,
-    pub rules: HashMap<String, Rule>,
+    pub rules: HashMap<String, Rewrite>,
 }
 
