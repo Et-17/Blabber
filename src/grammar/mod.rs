@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 // The base unit in a grammar rule
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Symbol {
     Terminal(String),
     Nonterminal(String),
