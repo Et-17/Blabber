@@ -4,10 +4,15 @@
 
 mod lexer;
 
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufRead;
+use std::path::Path;
+
 use crate::grammar::*;
 use lexer::*;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum CompileError {
     // A line which should contain a rule does not
     MissingEquals,
@@ -23,6 +28,19 @@ pub enum CompileError {
     // A blank line got too deep into the parser
     // This is a problem with blabber, not the grammar
     UnexpectedBlankLine,
+    // There was an issue with reading a file
+    FileError(std::io::Error),
+}
+
+impl PartialEq for CompileError {
+    fn eq(&self, other: &Self) -> bool {
+        if let CompileError::FileError(a) = self {
+            if let CompileError::FileError(b) = other {
+                return a.kind() == b.kind();
+            }
+        }
+        return std::mem::discriminant(self) == std::mem::discriminant(other);
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CompileError>;
@@ -66,6 +84,31 @@ fn parse_rule(tokens: &[Token]) -> Result<Rule> {
     return Ok(Rule {
         symbol,
         rewrite
+    });
+}
+
+pub fn parse_file(path: &impl AsRef<Path>) -> Result<Grammar> {
+    let file = File::open(path).map_err(|e| CompileError::FileError(e))?;
+    let buffer = std::io::BufReader::new(file).lines();
+
+    let mut first_rule = true;
+    let mut start_symbol = String::new();
+    let mut rules: HashMap<String, Rewrite> = HashMap::new();
+    
+    for rule in buffer {
+        let unwrapped_rule = rule.map_err(|e| CompileError::FileError(e))?;
+        let lexed_rule = lex_line(&unwrapped_rule)?;
+        let parsed_rule = parse_rule(&lexed_rule[..])?;
+        rules.insert(parsed_rule.symbol.clone(), parsed_rule.rewrite);
+        if first_rule {
+            start_symbol = parsed_rule.symbol.clone();
+            first_rule = false;
+        }
+    }
+
+    return Ok(Grammar {
+        start_symbol,
+        rules
     });
 }
 
@@ -152,5 +195,68 @@ mod tests {
         assert_eq!(parse_rule(
             &lexer::lex_line("= alpha bravo charlie").unwrap()[..]
         ), Err(CompileError::MissingNonterminal));
+    }
+
+    #[test]
+    fn parse_normal_file() {
+        let example_path = "example_data/postal_address.bnf";
+        let example_parsed = parse_file(&example_path).unwrap();
+        let mut rules = HashMap::new();
+
+        rules.insert("postal.address".to_string(), vec![vec![
+            Symbol::Nonterminal("name.part".to_string()),
+            Symbol::Nonterminal("street.address".to_string()),
+            Symbol::Nonterminal("zip.part".to_string())
+        ]]);
+        rules.insert("name.part".to_string(), vec![
+            vec![
+                Symbol::Nonterminal("personal.part".to_string()),
+                Symbol::Nonterminal("last.name".to_string()),
+                Symbol::Nonterminal("opt.suffix.part".to_string()),
+                Symbol::Terminal("\\n".to_string())
+            ],
+            vec![
+                Symbol::Nonterminal("personal.part".to_string()),
+                Symbol::Nonterminal("name.part".to_string())
+            ]
+        ]);
+        rules.insert("personal.part".to_string(), vec![
+            vec![Symbol::Nonterminal("first.name".to_string())],
+            vec![
+                Symbol::Nonterminal("initial".to_string()),
+                Symbol::Terminal(".".to_string())
+            ]
+        ]);
+        rules.insert("street.address".to_string(), vec![vec![
+            Symbol::Nonterminal("house.num".to_string()),
+            Symbol::Nonterminal("street.name".to_string()),
+            Symbol::Nonterminal("opt.apt.num".to_string()),
+            Symbol::Terminal("\\n".to_string())
+        ]]);
+        rules.insert("zip.part".to_string(), vec![vec![
+            Symbol::Nonterminal("town.name".to_string()),
+            Symbol::Terminal(",".to_string()),
+            Symbol::Nonterminal("state.code".to_string()),
+            Symbol::Nonterminal("zip.code".to_string()),
+            Symbol::Terminal("\\n".to_string())
+        ]]);
+        rules.insert("opt.suffix.part".to_string(), vec![
+            vec![Symbol::Terminal("Sr.".to_string())],
+            vec![Symbol::Terminal("Jr.".to_string())],
+            vec![Symbol::Nonterminal("roman.numeral".to_string())],
+            vec![Symbol::Terminal("".to_string())]
+        ]);
+        rules.insert("opt.apt.num".to_string(), vec![
+            vec![
+                Symbol::Terminal("Apt".to_string()),
+                Symbol::Nonterminal("apt.num".to_string())
+            ],
+            vec![Symbol::Terminal("".to_string())]
+        ]);
+
+        assert_eq!(example_parsed, Grammar {
+            start_symbol: "postal.address".to_string(),
+            rules
+        });
     }
 }

@@ -17,7 +17,7 @@ pub type Alternative = Vec<Symbol>;
 // The alternatives of a rewrite rule
 pub type Rewrite = Vec<Alternative>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Grammar {
     pub start_symbol: String,
     pub rules: HashMap<String, Rewrite>,
