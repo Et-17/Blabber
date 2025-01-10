@@ -10,6 +10,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use crate::grammar::*;
+use itertools::Itertools;
 use lexer::*;
 
 #[derive(Debug)]
@@ -43,7 +44,27 @@ impl PartialEq for CompileError {
     }
 }
 
+// This allows the parser to specify what line an error occured on.
+// If it is not a line-specific error, such as an io error,
+// then the line field will be zero.
+#[derive(Debug, PartialEq)]
+pub struct LineCompileError {
+    line: usize,
+    error: CompileError
+}
+
+impl From<std::io::Error> for LineCompileError {
+    fn from(value: std::io::Error) -> Self {
+        LineCompileError {
+            line: 0,
+            error: CompileError::FileError(value)
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, CompileError>;
+pub type LineResult<T> = std::result::Result<T, LineCompileError>;
+pub type FileResult<T> = std::result::Result<T, Vec<LineCompileError>>;
 
 #[derive(PartialEq, Debug)]
 struct Rule {
@@ -64,7 +85,7 @@ fn parse_rewrite(tokens: &[Token]) -> Result<Rewrite> {
     tokens.split(|t| *t == Token::Or).map(parse_alternative).collect()
 }
 
-fn parse_rule(tokens: &[Token]) -> Result<Rule> {
+fn parse_line(tokens: &[Token]) -> Result<Rule> {
     // Try to get the token the rule is for. The match returns a result which
     // is then unwrapped with the ? operator
     let symbol = match tokens.get(0) {
@@ -87,29 +108,65 @@ fn parse_rule(tokens: &[Token]) -> Result<Rule> {
     });
 }
 
-pub fn parse_file(path: &impl AsRef<Path>) -> Result<Grammar> {
-    let file = File::open(path).map_err(|e| CompileError::FileError(e))?;
-    let buffer = std::io::BufReader::new(file).lines();
-
-    let mut first_rule = true;
-    let mut start_symbol = String::new();
-    let mut rules: HashMap<String, Rewrite> = HashMap::new();
+fn parse_lex_line(line_num: usize, line: &str) -> LineResult<Rule> {
+    let lexed_line = lexer::lex_line(line).map_err(|error| LineCompileError {
+        line: line_num,
+        error
+    })?;
+    let parsed_line = parse_line(&lexed_line).map_err(|error| LineCompileError {
+        line: line_num,
+        error
+    })?;
     
-    for rule in buffer {
-        let unwrapped_rule = rule.map_err(|e| CompileError::FileError(e))?;
-        let lexed_rule = lex_line(&unwrapped_rule)?;
-        let parsed_rule = parse_rule(&lexed_rule[..])?;
-        rules.insert(parsed_rule.symbol.clone(), parsed_rule.rewrite);
-        if first_rule {
-            start_symbol = parsed_rule.symbol.clone();
-            first_rule = false;
+    return Ok(parsed_line);
+}
+
+// Returns an iterator over the lines of a file, with the io errors wrapped
+// in LineCompileError and enumerated
+fn file_line_nums<'a>(file: File) -> impl Iterator<Item = (usize, LineResult<String>)> + 'a {
+    let buffer = std::io::BufReader::new(file).lines();
+    let buffer_mapped_errors = buffer.map(|line| line.map_err(LineCompileError::from));
+
+    buffer_mapped_errors.enumerate().map(|(num, line)| (num + 1, line))
+}
+
+impl From<Vec<Rule>> for Grammar {
+    fn from(value: Vec<Rule>) -> Self {
+        let start_symbol = if value.len() > 0 {
+            value[0].symbol.clone()
+        } else {
+            String::new()
+        };
+
+        let mut rules = HashMap::with_capacity(value.len());
+        for rule in value {
+            rules.insert(rule.symbol, rule.rewrite);
+        }
+
+        return Grammar {
+            start_symbol,
+            rules
         }
     }
+}
 
-    return Ok(Grammar {
-        start_symbol,
-        rules
+pub fn parse_file(path: &impl AsRef<Path>) -> FileResult<Grammar> {
+    let file = File::open(path).map_err(|e| vec![LineCompileError::from(e)])?;
+    let lines = file_line_nums(file);
+
+    // If the buffer read successfully, process it; if not, keep the io error
+    let parsed_lines = lines.map(|(num, line_res)| match line_res {
+        Ok(line) => parse_lex_line(num, &line),
+        Err(e) => Err(e)
     });
+
+    let (rules, errors): (Vec<_>, Vec<_>) = parsed_lines.partition(LineResult::is_ok);
+    if errors.len() > 0 {
+        return Err(errors.into_iter().map(LineResult::unwrap_err).collect_vec());
+    }
+
+    let rules_unwrapped = rules.into_iter().map(LineResult::unwrap).collect_vec();
+    return Ok(rules_unwrapped.into());
 }
 
 #[cfg(test)]
@@ -157,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_normal_rule() {
+    fn parse_normal_line() {
         let text = "personal.part = first.name | initial \".\"";
         let lexed = lexer::lex_line(text).unwrap();
 
@@ -172,27 +229,27 @@ mod tests {
             ]
         };
 
-        assert_eq!(parse_rule(&lexed[..]), Ok(answer));
+        assert_eq!(parse_line(&lexed[..]), Ok(answer));
     }
 
     #[test]
-    fn parse_malformed_rule() {
+    fn parse_malformed_line() {
         // Blank
-        assert_eq!(parse_rule(&[]), Err(CompileError::UnexpectedBlankLine));
+        assert_eq!(parse_line(&[]), Err(CompileError::UnexpectedBlankLine));
 
         // Missing equals
-        assert_eq!(parse_rule(
+        assert_eq!(parse_line(
             &lexer::lex_line("alpha bravo charlie").unwrap()[..]
         ), Err(CompileError::MissingEquals));
 
         // Improper definition
-        assert_eq!(parse_rule(
+        assert_eq!(parse_line(
             &lexer::lex_line("\"alpha\" = bravo charlie").unwrap()[..]
         ), Err(CompileError::MissingNonterminal));
-        assert_eq!(parse_rule(
+        assert_eq!(parse_line(
             &lexer::lex_line("| = alpha bravo charlie").unwrap()[..]
         ), Err(CompileError::MissingNonterminal));
-        assert_eq!(parse_rule(
+        assert_eq!(parse_line(
             &lexer::lex_line("= alpha bravo charlie").unwrap()[..]
         ), Err(CompileError::MissingNonterminal));
     }
@@ -258,5 +315,22 @@ mod tests {
             start_symbol: "postal.address".to_string(),
             rules
         });
+    }
+
+    #[test]
+    fn parse_malformed_file() {
+        let example_path = "example_data/malformed.bnf";
+        let example_parsed = parse_file(&example_path).unwrap_err();
+
+        assert_eq!(example_parsed, vec![
+            LineCompileError {
+                line: 3,
+                error: CompileError::MissingNonterminal
+            },
+            LineCompileError {
+                line: 7,
+                error: CompileError::UnexpectedEquals
+            }
+        ]);
     }
 }
