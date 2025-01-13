@@ -12,14 +12,14 @@ pub enum Token {
 
 pub fn lex_terminal(line: &mut impl PeekingNext<Item = char>) -> Result<Token> {
     line.next(); // Consume open quote
-    let token_text = line.peeking_take_while(|&c| c != '\"').collect();
+    let token_text: String = line.peeking_take_while(|&c| c != '\"').collect();
 
     // Check if there is a close quote and consume it if there is
     if line.next() != Some('\"') {
         return Err(CompileError::UnmatchedQuote);
     }
 
-    Ok(Token::Terminal(token_text))
+    Ok(Token::Terminal(token_text.replace("\\n", "\n")))
 }
 
 pub fn lex_nonterminal(line: &mut impl Iterator<Item = char>) -> Result<Token> {
