@@ -121,13 +121,19 @@ fn parse_lex_line(line_num: usize, line: &str) -> LineResult<Rule> {
     return Ok(parsed_line);
 }
 
+fn is_rule_line(line: &String) -> bool {
+    !line.is_empty() && !line.starts_with(';')
+}
+
 // Returns an iterator over the lines of a file, with the io errors wrapped
 // in LineCompileError and enumerated
 fn file_line_nums<'a>(file: File) -> impl Iterator<Item = (usize, LineResult<String>)> + 'a {
-    let buffer = std::io::BufReader::new(file).lines();
-    let buffer_mapped_errors = buffer.map(|line| line.map_err(LineCompileError::from));
-
-    buffer_mapped_errors.enumerate().map(|(num, line)| (num + 1, line))
+    std::io::BufReader::new(file)
+        .lines()
+        .map(|line| line.map_err(LineCompileError::from))
+        .enumerate()
+        .map(|(num, line)| (num + 1, line))
+        .filter(|(_, line)| line.as_ref().is_ok_and(is_rule_line))
 }
 
 impl From<Vec<Rule>> for Grammar {
@@ -270,7 +276,7 @@ mod tests {
                 Symbol::Nonterminal("personal.part".to_string()),
                 Symbol::Nonterminal("last.name".to_string()),
                 Symbol::Nonterminal("opt.suffix.part".to_string()),
-                Symbol::Terminal("\\n".to_string())
+                Symbol::Terminal("\n".to_string())
             ],
             vec![
                 Symbol::Nonterminal("personal.part".to_string()),
@@ -288,14 +294,14 @@ mod tests {
             Symbol::Nonterminal("house.num".to_string()),
             Symbol::Nonterminal("street.name".to_string()),
             Symbol::Nonterminal("opt.apt.num".to_string()),
-            Symbol::Terminal("\\n".to_string())
+            Symbol::Terminal("\n".to_string())
         ]]);
         rules.insert("zip.part".to_string(), vec![vec![
             Symbol::Nonterminal("town.name".to_string()),
             Symbol::Terminal(",".to_string()),
             Symbol::Nonterminal("state.code".to_string()),
             Symbol::Nonterminal("zip.code".to_string()),
-            Symbol::Terminal("\\n".to_string())
+            Symbol::Terminal("\n".to_string())
         ]]);
         rules.insert("opt.suffix.part".to_string(), vec![
             vec![Symbol::Terminal("Sr.".to_string())],

@@ -1,0 +1,29 @@
+; ; This generates USPS postal addresses
+
+; start symbol
+postal.address = name.part "\n" street.address "\n" zip.part
+
+; lines
+name.part = personal.part " " last.name " " opt.suffix.part | personal.part " " name.part
+personal.part = first.name | initial "."
+street.address = house.num " " street " " opt.apt.num
+
+; subparts
+zip.part = town.name ", " state.code " " zip.code "\n"
+last.name = "Smith" | "Johnson" | "Williams" | "Brown" | "Jones" | "Garcia"
+first.name = "James" | "Michael" | "Robert" | "John" | "David" | "William"
+initial = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+house.num = digit digit digit digit digit | digit digit digit digit
+digit = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+street = street.name " " street.type
+street.name = "Maple" | "Oak" | "Washington" | "5th"
+street.type = "St." | "Av." | "Way" | "Rd." 
+town.name = "Dayton" | "Milford" | "Franklin" | "Springfield" | "Fairview"
+state.code = "FL" | "GA" | "NC" | "TN"
+roman.numeral = "I" | "II" | "III"
+zip.code = digit digit digit digit digit
+apt.num = digit digit digit | digit digit | digit
+
+; optionals
+opt.suffix.part = "Sr." | "Jr." | roman.numeral | ""
+opt.apt.num = "Apt " apt.num | ""
