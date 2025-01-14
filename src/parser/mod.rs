@@ -5,6 +5,7 @@
 mod lexer;
 
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::BufRead;
 use std::path::Path;
@@ -44,6 +45,16 @@ impl PartialEq for CompileError {
     }
 }
 
+impl Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let CompileError::FileError(e) = self {
+            write!(f, "FileError({:#?})", e.kind())
+        } else {
+            write!(f, "{:#?}", self)
+        }
+    }
+}
+
 // This allows the parser to specify what line an error occured on.
 // If it is not a line-specific error, such as an io error,
 // then the line field will be zero.
@@ -58,6 +69,15 @@ impl From<std::io::Error> for LineCompileError {
         LineCompileError {
             line: 0,
             error: CompileError::FileError(value)
+        }
+    }
+}
+
+impl Display for LineCompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.error {
+            CompileError::FileError(_) => write!(f, "Encountered error {}", self.error),
+            _ => write!(f, "Encountered error {} at line {}", self.error, self.line)
         }
     }
 }

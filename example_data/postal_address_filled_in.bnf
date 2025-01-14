@@ -9,7 +9,7 @@ personal.part = first.name | initial "."
 street.address = house.num " " street " " opt.apt.num
 
 ; subparts
-zip.part = town.name ", " state.code " " zip.code "\n"
+zip.part = town.name ", " state.code " " zip.code
 last.name = "Smith" | "Johnson" | "Williams" | "Brown" | "Jones" | "Garcia"
 first.name = "James" | "Michael" | "Robert" | "John" | "David" | "William"
 initial = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"

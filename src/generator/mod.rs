@@ -3,7 +3,7 @@
 */
 
 use rand::prelude::*;
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 use crate::grammar::*;
 
@@ -13,10 +13,25 @@ pub enum GenerateError {
     UndefinedNonterminal(String),
 }
 
+impl Display for GenerateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GenerateError::UndefinedNonterminal(terminal) => write!(f, "UndefinedNonterminal({})", terminal),
+            // The next line is here for when I need more GenerateErrors in the future
+            // _ => write!(f, "{:#?}", self)
+        }
+    }
+}
+
 pub type GenResult = Result<String, GenerateError>;
 
-pub fn generate(grammar: Grammar) -> GenResult {
+pub fn generate(grammar: &Grammar) -> GenResult {
     generate_nonterminal(&grammar.start_symbol, &grammar.rules)
+}
+
+// Generates a sentence in the given grammar starting with the given symbol
+pub fn generate_with_override(grammar: &Grammar, start: &String) -> GenResult {
+    generate_nonterminal(start, &grammar.rules)
 }
 
 fn generate_nonterminal(nonterminal: &String, rules: &HashMap<String, Rewrite>) -> GenResult {
