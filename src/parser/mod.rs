@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::BufRead;
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::grammar::*;
 use itertools::Itertools;
@@ -47,10 +47,32 @@ impl PartialEq for CompileError {
 
 impl Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let CompileError::FileError(e) = self {
-            write!(f, "FileError({:#?})", e.kind())
+        match self {
+            CompileError::MissingEquals => write!(f, "Expected `=` after nonterminal"),
+            CompileError::UnexpectedEquals => write!(f, "Unexpected `=` encountered"),
+            CompileError::MissingNonterminal => write!(f, "Tried to define something other than a nonterminal"),
+            CompileError::UnmatchedQuote => write!(f, "Unmatched quotes"),
+            CompileError::UnsplitRewrite => write!(f, "Rewrite was not fully split (this is a problem with blabber, not the grammar)"),
+            CompileError::UnexpectedBlankLine => write!(f, "Blank line encountered in rule parser (this is a problem with blabber, not the grammar)"),
+            CompileError::FileError(e) => write!(f, "Encountered file error: {:#?}", e),
+        }
+    }
+}
+
+// This stores information pertaining to where the parser is to allow traceable
+// errors and clearer reporting
+#[derive(Debug, PartialEq, Clone)]
+struct Location {
+    file: PathBuf,
+    line: usize
+}
+
+impl Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.line == 0 {
+            write!(f,"{}", self.file.display())
         } else {
-            write!(f, "{:#?}", self)
+            write!(f, "{}:{}", self.file.display(), self.line)
         }
     }
 }
@@ -60,14 +82,17 @@ impl Display for CompileError {
 // then the line field will be zero.
 #[derive(Debug, PartialEq)]
 pub struct LineCompileError {
-    line: usize,
+    location: Location,
     error: CompileError
 }
 
 impl From<std::io::Error> for LineCompileError {
     fn from(value: std::io::Error) -> Self {
         LineCompileError {
-            line: 0,
+            location: Location {
+                file: PathBuf::new(),
+                line: 0
+            },
             error: CompileError::FileError(value)
         }
     }
@@ -75,10 +100,7 @@ impl From<std::io::Error> for LineCompileError {
 
 impl Display for LineCompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.error {
-            CompileError::FileError(_) => write!(f, "Encountered error {}", self.error),
-            _ => write!(f, "Encountered error {} at line {}", self.error, self.line)
-        }
+        write!(f, "[{}]  {}", self.location, self.error)
     }
 }
 
@@ -128,17 +150,10 @@ fn parse_line(tokens: &[Token]) -> Result<Rule> {
     });
 }
 
-fn parse_lex_line(line_num: usize, line: &str) -> LineResult<Rule> {
-    let lexed_line = lexer::lex_line(line).map_err(|error| LineCompileError {
-        line: line_num,
-        error
-    })?;
-    let parsed_line = parse_line(&lexed_line).map_err(|error| LineCompileError {
-        line: line_num,
-        error
-    })?;
-    
-    return Ok(parsed_line);
+fn parse_lex_line(location: Location, line: &str) -> LineResult<Rule> {
+    lexer::lex_line(line)
+        .and_then(|lexed_line| parse_line(&lexed_line))
+        .map_err(|error| LineCompileError { location, error })
 }
 
 fn is_rule_line(line: &String) -> bool {
@@ -153,7 +168,7 @@ fn file_line_nums<'a>(file: File) -> impl Iterator<Item = (usize, LineResult<Str
         .map(|line| line.map_err(LineCompileError::from))
         .enumerate()
         .map(|(num, line)| (num + 1, line))
-        .filter(|(_, line)| line.as_ref().is_ok_and(is_rule_line))
+        .filter(|(_, line)| line.as_ref().is_ok_and(is_rule_line) || line.is_err())
 }
 
 impl From<Vec<Rule>> for Grammar {
@@ -176,13 +191,16 @@ impl From<Vec<Rule>> for Grammar {
     }
 }
 
-pub fn parse_file(path: &impl AsRef<Path>) -> FileResult<Grammar> {
+pub fn parse_file(path: &PathBuf) -> FileResult<Grammar> {
     let file = File::open(path).map_err(|e| vec![LineCompileError::from(e)])?;
     let lines = file_line_nums(file);
 
     // If the buffer read successfully, process it; if not, keep the io error
     let parsed_lines = lines.map(|(num, line_res)| match line_res {
-        Ok(line) => parse_lex_line(num, &line),
+        Ok(line) => parse_lex_line(Location {
+            file: path.clone(),
+            line: num
+        }, &line),
         Err(e) => Err(e)
     });
 
@@ -282,7 +300,7 @@ mod tests {
 
     #[test]
     fn parse_normal_file() {
-        let example_path = "example_data/postal_address.bnf";
+        let example_path = PathBuf::from("example_data/postal_address.bnf");
         let example_parsed = parse_file(&example_path).unwrap();
         let mut rules = HashMap::new();
 
@@ -345,16 +363,22 @@ mod tests {
 
     #[test]
     fn parse_malformed_file() {
-        let example_path = "example_data/malformed.bnf";
+        let example_path = PathBuf::from("example_data/malformed.bnf");
         let example_parsed = parse_file(&example_path).unwrap_err();
 
         assert_eq!(example_parsed, vec![
             LineCompileError {
-                line: 3,
+                location: Location {
+                    file: example_path.clone(),
+                    line: 3
+                },
                 error: CompileError::MissingNonterminal
             },
             LineCompileError {
-                line: 7,
+                location: Location {
+                    file: example_path,
+                    line: 7
+                },
                 error: CompileError::UnexpectedEquals
             }
         ]);
