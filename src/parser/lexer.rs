@@ -1,6 +1,6 @@
 use itertools::{Itertools, PeekingNext};
 
-use super::{CompileError, Result};
+use super::{CompileErrorType, Result};
 
 #[derive(PartialEq, Debug)]
 pub enum Token {
@@ -16,7 +16,7 @@ pub fn lex_terminal(line: &mut impl PeekingNext<Item = char>) -> Result<Token> {
 
     // Check if there is a close quote and consume it if there is
     if line.next() != Some('\"') {
-        return Err(CompileError::UnmatchedQuote);
+        return Err(CompileErrorType::UnmatchedQuote);
     }
 
     Ok(Token::Terminal(token_text.replace("\\n", "\n")))
@@ -88,7 +88,7 @@ mod tests {
             let mut chars = line.chars().peekable();
             chars.next();
 
-            assert_eq!(lex_terminal(&mut chars).unwrap_err(), CompileError::UnmatchedQuote);
+            assert_eq!(lex_terminal(&mut chars).unwrap_err(), CompileErrorType::UnmatchedQuote);
         }
     }
 

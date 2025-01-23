@@ -11,11 +11,12 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 use crate::grammar::*;
+use crate::error_handling::*;
 use itertools::Itertools;
 use lexer::*;
 
 #[derive(Debug)]
-pub enum CompileError {
+pub enum CompileErrorType {
     // A line which should contain a rule does not
     MissingEquals,
     // A rule has multiple equals signs
@@ -34,10 +35,12 @@ pub enum CompileError {
     FileError(std::io::Error),
 }
 
-impl PartialEq for CompileError {
+impl ErrorType for CompileErrorType {}
+
+impl PartialEq for CompileErrorType {
     fn eq(&self, other: &Self) -> bool {
-        if let CompileError::FileError(a) = self {
-            if let CompileError::FileError(b) = other {
+        if let CompileErrorType::FileError(a) = self {
+            if let CompileErrorType::FileError(b) = other {
                 return a.kind() == b.kind();
             }
         }
@@ -45,79 +48,48 @@ impl PartialEq for CompileError {
     }
 }
 
-impl Display for CompileError {
+impl Display for CompileErrorType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CompileError::MissingEquals => write!(f, "Expected `=` after nonterminal"),
-            CompileError::UnexpectedEquals => write!(f, "Unexpected `=` encountered"),
-            CompileError::MissingNonterminal => write!(f, "Tried to define something other than a nonterminal"),
-            CompileError::UnmatchedQuote => write!(f, "Unmatched quotes"),
-            CompileError::UnsplitRewrite => write!(f, "Rewrite was not fully split (this is a problem with blabber, not the grammar)"),
-            CompileError::UnexpectedBlankLine => write!(f, "Blank line encountered in rule parser (this is a problem with blabber, not the grammar)"),
-            CompileError::FileError(e) => write!(f, "Encountered file error: {:#?}", e),
+            CompileErrorType::MissingEquals => write!(f, "Expected `=` after nonterminal"),
+            CompileErrorType::UnexpectedEquals => write!(f, "Unexpected `=` encountered"),
+            CompileErrorType::MissingNonterminal => write!(f, "Tried to define something other than a nonterminal"),
+            CompileErrorType::UnmatchedQuote => write!(f, "Unmatched quotes"),
+            CompileErrorType::UnsplitRewrite => write!(f, "Rewrite was not fully split (this is a problem with blabber, not the grammar)"),
+            CompileErrorType::UnexpectedBlankLine => write!(f, "Blank line encountered in rule parser (this is a problem with blabber, not the grammar)"),
+            CompileErrorType::FileError(e) => write!(f, "File error: {}", e),
         }
     }
 }
 
-// This stores information pertaining to where the parser is to allow traceable
-// errors and clearer reporting
-#[derive(Debug, PartialEq, Clone)]
-struct Location {
-    file: PathBuf,
-    line: usize
-}
+pub type CompileError = Error<CompileErrorType>;
+pub type CompileErrors = Errors<CompileErrorType>;
 
-impl Display for Location {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.line == 0 {
-            write!(f,"{}", self.file.display())
-        } else {
-            write!(f, "{}:{}", self.file.display(), self.line)
-        }
+fn io_error(error: std::io::Error, file: PathBuf) -> CompileError {
+    CompileError {
+        location: Location {
+            file,
+            line: 0
+        },
+        error: CompileErrorType::FileError(error)
     }
 }
 
-// This allows the parser to specify what line an error occured on.
-// If it is not a line-specific error, such as an io error,
-// then the line field will be zero.
-#[derive(Debug, PartialEq)]
-pub struct LineCompileError {
-    location: Location,
-    error: CompileError
-}
-
-impl From<std::io::Error> for LineCompileError {
-    fn from(value: std::io::Error) -> Self {
-        LineCompileError {
-            location: Location {
-                file: PathBuf::new(),
-                line: 0
-            },
-            error: CompileError::FileError(value)
-        }
-    }
-}
-
-impl Display for LineCompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}]  {}", self.location, self.error)
-    }
-}
-
-pub type Result<T> = std::result::Result<T, CompileError>;
-pub type LineResult<T> = std::result::Result<T, LineCompileError>;
-pub type FileResult<T> = std::result::Result<T, Vec<LineCompileError>>;
+pub type Result<T> = std::result::Result<T, CompileErrorType>;
+pub type LineResult<T> = std::result::Result<T, CompileError>;
+pub type FileResult<T> = std::result::Result<T, CompileErrors>;
 
 #[derive(PartialEq, Debug)]
 struct Rule {
     symbol: String,
     rewrite: Rewrite,
+    location: Location
 }
 
 fn parse_alternative(tokens: &[Token]) -> Result<Alternative> {
     tokens.iter().map(|t| match t {
-        Token::Equals => Err(CompileError::UnexpectedEquals),
-        Token::Or => Err(CompileError::UnsplitRewrite),
+        Token::Equals => Err(CompileErrorType::UnexpectedEquals),
+        Token::Or => Err(CompileErrorType::UnsplitRewrite),
         Token::Nonterminal(s) => Ok(Symbol::Nonterminal(s.clone())),
         Token::Terminal(s) => Ok(Symbol::Terminal(s.clone()))
     }).collect()
@@ -127,33 +99,32 @@ fn parse_rewrite(tokens: &[Token]) -> Result<Rewrite> {
     tokens.split(|t| *t == Token::Or).map(parse_alternative).collect()
 }
 
-fn parse_line(tokens: &[Token]) -> Result<Rule> {
+fn parse_line(tokens: &[Token], location: Location) -> Result<Rule> {
     // Try to get the token the rule is for. The match returns a result which
     // is then unwrapped with the ? operator
     let symbol = match tokens.get(0) {
         Some(Token::Nonterminal(s)) => Ok(s.clone()),
-        Some(_) => Err(CompileError::MissingNonterminal),
-        None => Err(CompileError::UnexpectedBlankLine)
+        Some(_) => Err(CompileErrorType::MissingNonterminal),
+        None => Err(CompileErrorType::UnexpectedBlankLine)
     }?;
 
-    // Verify the presence of the equals sign
-    match tokens.get(1) {
-        Some(Token::Equals) => Ok(()),
-        _ => Err(CompileError::MissingEquals)
-    }?;
+    if tokens.get(1) != Some(&Token::Equals) {
+        return Err(CompileErrorType::MissingEquals)
+    }
 
     let rewrite = parse_rewrite(&tokens[2..])?;
 
     return Ok(Rule {
         symbol,
-        rewrite
+        rewrite,
+        location
     });
 }
 
-fn parse_lex_line(location: Location, line: &str) -> LineResult<Rule> {
+fn parse_lex_line(line: &str, location: Location) -> LineResult<Rule> {
     lexer::lex_line(line)
-        .and_then(|lexed_line| parse_line(&lexed_line))
-        .map_err(|error| LineCompileError { location, error })
+        .and_then(|lexed_line| parse_line(&lexed_line, location.clone()))
+        .map_err(|error| CompileError { location: location, error })
 }
 
 fn is_rule_line(line: &String) -> bool {
@@ -161,14 +132,14 @@ fn is_rule_line(line: &String) -> bool {
 }
 
 // Returns an iterator over the lines of a file, with the io errors wrapped
-// in LineCompileError and enumerated
-fn file_line_nums<'a>(file: File) -> impl Iterator<Item = (usize, LineResult<String>)> + 'a {
+// in CompileError and enumerated
+fn file_line_nums<'a>(file: File, path: &'a PathBuf) -> impl Iterator<Item = (usize, LineResult<String>)> + 'a {
     std::io::BufReader::new(file)
         .lines()
-        .map(|line| line.map_err(LineCompileError::from))
+        .map(move |line| line.map_err(|e| io_error(e, path.clone())))
         .enumerate()
-        .map(|(num, line)| (num + 1, line))
         .filter(|(_, line)| line.as_ref().is_ok_and(is_rule_line) || line.is_err())
+        .map(|(num, line)| (num + 1, line))
 }
 
 impl From<Vec<Rule>> for Grammar {
@@ -181,7 +152,7 @@ impl From<Vec<Rule>> for Grammar {
 
         let mut rules = HashMap::with_capacity(value.len());
         for rule in value {
-            rules.insert(rule.symbol, rule.rewrite);
+            rules.insert(rule.symbol, (rule.rewrite, rule.location));
         }
 
         return Grammar {
@@ -192,15 +163,15 @@ impl From<Vec<Rule>> for Grammar {
 }
 
 pub fn parse_file(path: &PathBuf) -> FileResult<Grammar> {
-    let file = File::open(path).map_err(|e| vec![LineCompileError::from(e)])?;
-    let lines = file_line_nums(file);
+    let file = File::open(path).map_err(|e| vec![io_error(e, path.clone())])?;
+    let lines = file_line_nums(file, path);
 
     // If the buffer read successfully, process it; if not, keep the io error
     let parsed_lines = lines.map(|(num, line_res)| match line_res {
-        Ok(line) => parse_lex_line(Location {
+        Ok(line) => parse_lex_line(&line, Location {
             file: path.clone(),
             line: num
-        }, &line),
+        }),
         Err(e) => Err(e)
     });
 
@@ -218,6 +189,15 @@ mod tests {
     use std::iter::zip;
 
     use super::*;
+
+    impl Location {
+        pub fn new() -> Self {
+            Location {
+                file: PathBuf::new(),
+                line: 0
+            }
+        }
+    }
 
     #[test]
     fn parse_normal_alternative() {
@@ -253,14 +233,18 @@ mod tests {
 
     #[test]
     fn parse_malformed_alternative() {
-        assert_eq!(parse_alternative(&[Token::Equals]), Err(CompileError::UnexpectedEquals));
-        assert_eq!(parse_alternative(&[Token::Or]), Err(CompileError::UnsplitRewrite));
+        assert_eq!(parse_alternative(&[Token::Equals]), Err(CompileErrorType::UnexpectedEquals));
+        assert_eq!(parse_alternative(&[Token::Or]), Err(CompileErrorType::UnsplitRewrite));
     }
 
     #[test]
     fn parse_normal_line() {
         let text = "personal.part = first.name | initial \".\"";
         let lexed = lexer::lex_line(text).unwrap();
+        let location = Location {
+            file: PathBuf::new(),
+            line: 0
+        };
 
         let answer = Rule {
             symbol: "personal.part".to_string(),
@@ -270,32 +254,37 @@ mod tests {
                     Symbol::Nonterminal("initial".to_string()),
                     Symbol::Terminal(".".to_string())
                 ]
-            ]
+            ],
+            location: location.clone()
         };
 
-        assert_eq!(parse_line(&lexed[..]), Ok(answer));
+        assert_eq!(parse_line(&lexed[..], location), Ok(answer));
     }
 
     #[test]
     fn parse_malformed_line() {
         // Blank
-        assert_eq!(parse_line(&[]), Err(CompileError::UnexpectedBlankLine));
+        assert_eq!(parse_line(&[], Location::new()), Err(CompileErrorType::UnexpectedBlankLine));
 
         // Missing equals
         assert_eq!(parse_line(
-            &lexer::lex_line("alpha bravo charlie").unwrap()[..]
-        ), Err(CompileError::MissingEquals));
+            &lexer::lex_line("alpha bravo charlie").unwrap()[..],
+            Location::new()
+        ), Err(CompileErrorType::MissingEquals));
 
         // Improper definition
         assert_eq!(parse_line(
-            &lexer::lex_line("\"alpha\" = bravo charlie").unwrap()[..]
-        ), Err(CompileError::MissingNonterminal));
+            &lexer::lex_line("\"alpha\" = bravo charlie").unwrap()[..],
+            Location::new()
+        ), Err(CompileErrorType::MissingNonterminal));
         assert_eq!(parse_line(
-            &lexer::lex_line("| = alpha bravo charlie").unwrap()[..]
-        ), Err(CompileError::MissingNonterminal));
+            &lexer::lex_line("| = alpha bravo charlie").unwrap()[..],
+            Location::new()
+        ), Err(CompileErrorType::MissingNonterminal));
         assert_eq!(parse_line(
-            &lexer::lex_line("= alpha bravo charlie").unwrap()[..]
-        ), Err(CompileError::MissingNonterminal));
+            &lexer::lex_line("= alpha bravo charlie").unwrap()[..],
+            Location::new()
+        ), Err(CompileErrorType::MissingNonterminal));
     }
 
     #[test]
@@ -304,12 +293,12 @@ mod tests {
         let example_parsed = parse_file(&example_path).unwrap();
         let mut rules = HashMap::new();
 
-        rules.insert("postal.address".to_string(), vec![vec![
+        rules.insert("postal.address".to_string(), (vec![vec![
             Symbol::Nonterminal("name.part".to_string()),
             Symbol::Nonterminal("street.address".to_string()),
             Symbol::Nonterminal("zip.part".to_string())
-        ]]);
-        rules.insert("name.part".to_string(), vec![
+        ]], Location { file: example_path.clone(), line: 4}));
+        rules.insert("name.part".to_string(), (vec![
             vec![
                 Symbol::Nonterminal("personal.part".to_string()),
                 Symbol::Nonterminal("last.name".to_string()),
@@ -320,40 +309,40 @@ mod tests {
                 Symbol::Nonterminal("personal.part".to_string()),
                 Symbol::Nonterminal("name.part".to_string())
             ]
-        ]);
-        rules.insert("personal.part".to_string(), vec![
+        ], Location { file: example_path.clone(), line: 7}));
+        rules.insert("personal.part".to_string(), (vec![
             vec![Symbol::Nonterminal("first.name".to_string())],
             vec![
                 Symbol::Nonterminal("initial".to_string()),
                 Symbol::Terminal(".".to_string())
             ]
-        ]);
-        rules.insert("street.address".to_string(), vec![vec![
+        ], Location { file: example_path.clone(), line: 8}));
+        rules.insert("street.address".to_string(), (vec![vec![
             Symbol::Nonterminal("house.num".to_string()),
             Symbol::Nonterminal("street.name".to_string()),
             Symbol::Nonterminal("opt.apt.num".to_string()),
             Symbol::Terminal("\n".to_string())
-        ]]);
-        rules.insert("zip.part".to_string(), vec![vec![
+        ]], Location { file: example_path.clone(), line: 9}));
+        rules.insert("zip.part".to_string(), (vec![vec![
             Symbol::Nonterminal("town.name".to_string()),
             Symbol::Terminal(",".to_string()),
             Symbol::Nonterminal("state.code".to_string()),
             Symbol::Nonterminal("zip.code".to_string()),
             Symbol::Terminal("\n".to_string())
-        ]]);
-        rules.insert("opt.suffix.part".to_string(), vec![
+        ]], Location { file: example_path.clone(), line: 12}));
+        rules.insert("opt.suffix.part".to_string(), (vec![
             vec![Symbol::Terminal("Sr.".to_string())],
             vec![Symbol::Terminal("Jr.".to_string())],
             vec![Symbol::Nonterminal("roman.numeral".to_string())],
             vec![Symbol::Terminal("".to_string())]
-        ]);
-        rules.insert("opt.apt.num".to_string(), vec![
+        ], Location { file: example_path.clone(), line: 15}));
+        rules.insert("opt.apt.num".to_string(), (vec![
             vec![
                 Symbol::Terminal("Apt".to_string()),
                 Symbol::Nonterminal("apt.num".to_string())
             ],
             vec![Symbol::Terminal("".to_string())]
-        ]);
+        ], Location { file: example_path.clone(), line: 16}));
 
         assert_eq!(example_parsed, Grammar {
             start_symbol: "postal.address".to_string(),
@@ -367,19 +356,19 @@ mod tests {
         let example_parsed = parse_file(&example_path).unwrap_err();
 
         assert_eq!(example_parsed, vec![
-            LineCompileError {
+            CompileError {
                 location: Location {
                     file: example_path.clone(),
                     line: 3
                 },
-                error: CompileError::MissingNonterminal
+                error: CompileErrorType::MissingNonterminal
             },
-            LineCompileError {
+            CompileError {
                 location: Location {
                     file: example_path,
                     line: 7
                 },
-                error: CompileError::UnexpectedEquals
+                error: CompileErrorType::UnexpectedEquals
             }
         ]);
     }
