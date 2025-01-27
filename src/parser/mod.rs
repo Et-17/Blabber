@@ -3,6 +3,7 @@
 */
 
 mod lexer;
+mod verifier;
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -14,6 +15,8 @@ use crate::grammar::*;
 use crate::error_handling::*;
 use itertools::Itertools;
 use lexer::*;
+use verifier::verify_rules;
+use verifier::IntermediateRuleset;
 
 #[derive(Debug)]
 pub enum CompileErrorType {
@@ -25,6 +28,8 @@ pub enum CompileErrorType {
     MissingNonterminal,
     // There is an unclosed quote
     UnmatchedQuote,
+    // An undefined token was used
+    UndefinedNonterminal(String),
     // Somehow a full rewrite was parsed as a base alternative
     // This is a problem with blabber, not the grammar
     UnsplitRewrite,
@@ -55,6 +60,7 @@ impl Display for CompileErrorType {
             CompileErrorType::UnexpectedEquals => write!(f, "Unexpected `=` encountered"),
             CompileErrorType::MissingNonterminal => write!(f, "Tried to define something other than a nonterminal"),
             CompileErrorType::UnmatchedQuote => write!(f, "Unmatched quotes"),
+            CompileErrorType::UndefinedNonterminal(nonterminal) => write!(f, "Could not find definition for `{}`", nonterminal),
             CompileErrorType::UnsplitRewrite => write!(f, "Rewrite was not fully split (this is a problem with blabber, not the grammar)"),
             CompileErrorType::UnexpectedBlankLine => write!(f, "Blank line encountered in rule parser (this is a problem with blabber, not the grammar)"),
             CompileErrorType::FileError(e) => write!(f, "File error: {}", e),
@@ -142,46 +148,59 @@ fn file_line_nums<'a>(file: File, path: &'a PathBuf) -> impl Iterator<Item = (us
         .map(|(num, line)| (num + 1, line))
 }
 
-impl From<Vec<Rule>> for Grammar {
-    fn from(value: Vec<Rule>) -> Self {
-        let start_symbol = if value.len() > 0 {
-            value[0].symbol.clone()
-        } else {
-            String::new()
-        };
+// Generates a rule hashmap from a vector of rules
+fn ruleset_from_rules(rules: Vec<Rule>) -> FileResult<HashMap<String, Rewrite>> {
+    let rule_count = rules.len();
 
-        let mut rules = HashMap::with_capacity(value.len());
-        for rule in value {
-            rules.insert(rule.symbol, (rule.rewrite, rule.location));
-        }
-
-        return Grammar {
-            start_symbol,
-            rules
-        }
+    // Construct test hashmap
+    let mut test_ruleset = IntermediateRuleset::with_capacity(rule_count);
+    for rule in rules {
+        test_ruleset.insert(rule.symbol, (rule.rewrite, rule.location));
     }
+
+    verify_rules(&test_ruleset)?;
+
+    let mut ruleset = HashMap::<String, Rewrite>::with_capacity(rule_count);
+    for (symbol, (rewrite, _)) in test_ruleset.drain() {
+        ruleset.insert(symbol, rewrite);
+    }
+
+    return Ok(ruleset);
+}
+
+fn grammar_from_rules(rule_list: Vec<Rule>) -> FileResult<Grammar> {
+    let start_symbol = if rule_list.len() > 0 {
+        rule_list[0].symbol.clone()
+    } else {
+        String::new()
+    };
+
+    let rules = ruleset_from_rules(rule_list)?;
+
+    return Ok(Grammar {
+        start_symbol,
+        rules
+    })
 }
 
 pub fn parse_file(path: &PathBuf) -> FileResult<Grammar> {
     let file = File::open(path).map_err(|e| vec![io_error(e, path.clone())])?;
     let lines = file_line_nums(file, path);
 
-    // If the buffer read successfully, process it; if not, keep the io error
-    let parsed_lines = lines.map(|(num, line_res)| match line_res {
-        Ok(line) => parse_lex_line(&line, Location {
+    let parsed_lines = lines.map(|(num, line_res)| {
+        line_res.and_then(|line| parse_lex_line(&line, Location {
             file: path.clone(),
             line: num
-        }),
-        Err(e) => Err(e)
+        }))
     });
 
     let (rules, errors): (Vec<_>, Vec<_>) = parsed_lines.partition(LineResult::is_ok);
     if errors.len() > 0 {
         return Err(errors.into_iter().map(LineResult::unwrap_err).collect_vec());
     }
-
     let rules_unwrapped = rules.into_iter().map(LineResult::unwrap).collect_vec();
-    return Ok(rules_unwrapped.into());
+
+    return grammar_from_rules(rules_unwrapped);
 }
 
 #[cfg(test)]
@@ -197,6 +216,14 @@ mod tests {
                 line: 0
             }
         }
+    }
+
+    fn s_nonterminal(text: &str) -> Symbol {
+        Symbol::Nonterminal(text.to_string())
+    }
+
+    fn s_terminal(text: &str) -> Symbol {
+        Symbol::Terminal(text.to_string())
     }
 
     #[test]
@@ -215,14 +242,14 @@ mod tests {
         ];
         let answers = vec![
             vec![
-                Symbol::Nonterminal("personal.part".to_string()),
-                Symbol::Nonterminal("last.name".to_string()),
-                Symbol::Nonterminal("opt.suffix.name".to_string()),
-                Symbol::Terminal("\\n".to_string())
+                s_nonterminal("personal.part"),
+                s_nonterminal("last.name"),
+                s_nonterminal("opt.suffix.name"),
+                s_terminal("\\n")
             ],
             vec![
-                Symbol::Nonterminal("town.name".to_string()),
-                Symbol::Terminal(",".to_string())
+                s_nonterminal("town.name"),
+                s_terminal(",")
             ]
         ];
 
@@ -249,10 +276,10 @@ mod tests {
         let answer = Rule {
             symbol: "personal.part".to_string(),
             rewrite: vec![
-                vec![Symbol::Nonterminal("first.name".to_string())],
+                vec![s_nonterminal("first.name")],
                 vec![
-                    Symbol::Nonterminal("initial".to_string()),
-                    Symbol::Terminal(".".to_string())
+                    s_nonterminal("initial"),
+                    s_terminal(".")
                 ]
             ],
             location: location.clone()
@@ -289,63 +316,63 @@ mod tests {
 
     #[test]
     fn parse_normal_file() {
-        let example_path = PathBuf::from("example_data/postal_address.bnf");
+        let example_path = PathBuf::from("example_data/english.bnf");
         let example_parsed = parse_file(&example_path).unwrap();
+        
         let mut rules = HashMap::new();
-
-        rules.insert("postal.address".to_string(), (vec![vec![
-            Symbol::Nonterminal("name.part".to_string()),
-            Symbol::Nonterminal("street.address".to_string()),
-            Symbol::Nonterminal("zip.part".to_string())
-        ]], Location { file: example_path.clone(), line: 4}));
-        rules.insert("name.part".to_string(), (vec![
+        rules.insert("sentence".to_string(), vec![vec![
+            s_nonterminal("noun.phrase"),
+            s_terminal(" "),
+            s_nonterminal("verb.phrase")
+        ]]);
+        rules.insert("noun.phrase".to_string(), vec![
             vec![
-                Symbol::Nonterminal("personal.part".to_string()),
-                Symbol::Nonterminal("last.name".to_string()),
-                Symbol::Nonterminal("opt.suffix.part".to_string()),
-                Symbol::Terminal("\n".to_string())
+                s_nonterminal("adjective.phrase"),
+                s_terminal(" "),
+                s_nonterminal("noun")
+            ],
+            vec![s_nonterminal("noun")]
+        ]);
+        rules.insert("noun".to_string(), vec![vec![s_terminal("ideas")]]);
+        rules.insert("adjective.phrase".to_string(), vec![
+            vec![
+                s_nonterminal("adjective"),
+                s_terminal(", "),
+                s_nonterminal("adjective.phrase")
+            ],
+            vec![s_nonterminal("adjective")]
+        ]);
+        rules.insert("adjective".to_string(), vec![
+            vec![s_terminal("colorless")],
+            vec![s_terminal("green")]
+        ]);
+        rules.insert("verb.phrase".to_string(), vec![
+            vec![
+                s_nonterminal("verb"),
+                s_terminal(" "),
+                s_nonterminal("adverb")
             ],
             vec![
-                Symbol::Nonterminal("personal.part".to_string()),
-                Symbol::Nonterminal("name.part".to_string())
+                s_nonterminal("adverb"),
+                s_terminal(" "),
+                s_nonterminal("verb"),
+                s_terminal(" "),
+                s_nonterminal("noun.phrase")
             ]
-        ], Location { file: example_path.clone(), line: 7}));
-        rules.insert("personal.part".to_string(), (vec![
-            vec![Symbol::Nonterminal("first.name".to_string())],
+        ]);
+        rules.insert("verb".to_string(), vec![vec![s_terminal("hug")]]);
+        rules.insert("adverb.phrase".to_string(), vec![
             vec![
-                Symbol::Nonterminal("initial".to_string()),
-                Symbol::Terminal(".".to_string())
-            ]
-        ], Location { file: example_path.clone(), line: 8}));
-        rules.insert("street.address".to_string(), (vec![vec![
-            Symbol::Nonterminal("house.num".to_string()),
-            Symbol::Nonterminal("street.name".to_string()),
-            Symbol::Nonterminal("opt.apt.num".to_string()),
-            Symbol::Terminal("\n".to_string())
-        ]], Location { file: example_path.clone(), line: 9}));
-        rules.insert("zip.part".to_string(), (vec![vec![
-            Symbol::Nonterminal("town.name".to_string()),
-            Symbol::Terminal(",".to_string()),
-            Symbol::Nonterminal("state.code".to_string()),
-            Symbol::Nonterminal("zip.code".to_string()),
-            Symbol::Terminal("\n".to_string())
-        ]], Location { file: example_path.clone(), line: 12}));
-        rules.insert("opt.suffix.part".to_string(), (vec![
-            vec![Symbol::Terminal("Sr.".to_string())],
-            vec![Symbol::Terminal("Jr.".to_string())],
-            vec![Symbol::Nonterminal("roman.numeral".to_string())],
-            vec![Symbol::Terminal("".to_string())]
-        ], Location { file: example_path.clone(), line: 15}));
-        rules.insert("opt.apt.num".to_string(), (vec![
-            vec![
-                Symbol::Terminal("Apt".to_string()),
-                Symbol::Nonterminal("apt.num".to_string())
+                s_nonterminal("adverb"),
+                s_terminal(", "),
+                s_nonterminal("adverb.phrase")
             ],
-            vec![Symbol::Terminal("".to_string())]
-        ], Location { file: example_path.clone(), line: 16}));
+            vec![s_nonterminal("adverb")]
+        ]);
+        rules.insert("adverb".to_string(), vec![vec![s_terminal("furiously")]]);
 
         assert_eq!(example_parsed, Grammar {
-            start_symbol: "postal.address".to_string(),
+            start_symbol: "sentence".to_string(),
             rules
         });
     }

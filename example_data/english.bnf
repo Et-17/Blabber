@@ -1,11 +1,18 @@
 sentence = noun.phrase " " verb.phrase
-opt.noun.phrase = noun.phrase | ""
-noun.phrase = adjective.phrase " " noun.phrase | noun
-verb.phrase = opt.adverb.phrase " " verb " " opt.adverb.phrase | opt.adverb.phrase " " verb " " noun.phrase
-adjective.phrase = adjective
-opt.adverb.phrase = adverb.phrase | ""
-adverb.phrase = adverb
+
+; Noun stuff
+noun.phrase = adjective.phrase " " noun | noun
 noun = "ideas"
-verb = "hug"
+
+; Adjective stuff
+adjective.phrase = adjective ", " adjective.phrase | adjective
 adjective = "colorless" | "green"
+
+; Verb stuff
+verb.phrase = verb " " adverb | adverb " " verb " " noun.phrase
+; hug instead of sleep to add transitivity
+verb = "hug"
+
+; Adverb stuff
+adverb.phrase = adverb ", " adverb.phrase | adverb
 adverb = "furiously"

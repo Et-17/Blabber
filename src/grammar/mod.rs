@@ -4,8 +4,6 @@
 
 use std::collections::HashMap;
 
-use crate::error_handling::Location;
-
 // The base unit in a grammar rule
 #[derive(Debug, PartialEq)]
 pub enum Symbol {
@@ -22,6 +20,6 @@ pub type Rewrite = Vec<Alternative>;
 #[derive(Debug, PartialEq)]
 pub struct Grammar {
     pub start_symbol: String,
-    pub rules: HashMap<String, (Rewrite, Location)>,
+    pub rules: HashMap<String, Rewrite>,
 }
 
